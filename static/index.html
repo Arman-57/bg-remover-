@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BG Remover | AI background removal</title>
+<style>
+:root{--bg:#0a0f0c;--panel:#101813;--line:#1f3a2a;--g:#00ff9c;--dim:#6b8f7b;--txt:#d6f5e3}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;min-height:100vh}
+main{max-width:980px;margin:0 auto;padding:32px 20px}
+h1{font-size:1.4rem;margin:0 0 4px;color:var(--g)}
+h1::before{content:"$ ";color:var(--dim)}
+.sub{color:var(--dim);font-size:.85rem;margin-bottom:24px}
+#drop{border:1px dashed var(--line);background:var(--panel);padding:40px 16px;text-align:center;cursor:pointer;border-radius:6px;transition:.15s}
+#drop.over,#drop:hover{border-color:var(--g);box-shadow:0 0 0 1px var(--g) inset}
+.row{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:16px 0}
+label{color:var(--dim);font-size:.8rem}
+select,button{background:var(--panel);color:var(--txt);border:1px solid var(--line);border-radius:4px;padding:8px 12px;font:inherit;cursor:pointer}
+button.primary{background:var(--g);color:#04110a;border-color:var(--g);font-weight:700}
+button:disabled{opacity:.4;cursor:not-allowed}
+.sw{width:26px;height:26px;padding:0;border-radius:50%}
+.sw.on{outline:2px solid var(--g);outline-offset:2px}
+.panels{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:700px){.panels{grid-template-columns:1fr}}
+.panel{border:1px solid var(--line);background:var(--panel);border-radius:6px;padding:10px}
+.panel h3{margin:0 0 8px;font-size:.75rem;color:var(--dim);font-weight:400;text-transform:uppercase;letter-spacing:.1em}
+.stage{min-height:220px;display:flex;align-items:center;justify-content:center;border-radius:4px;overflow:hidden}
+.stage img{max-width:100%;max-height:420px;display:block}
+.checker{background:repeating-conic-gradient(#1a2a20 0 25%,#0f1a14 0 50%) 0 0/20px 20px}
+#stats{color:var(--dim);font-size:.8rem;margin-top:12px;min-height:1.2em}
+#err{color:#ff6b6b;font-size:.85rem}
+footer{margin-top:32px;color:var(--dim);font-size:.75rem;line-height:1.6}
+</style>
+</head>
+<body>
+<main>
+  <h1>bgremover --ai</h1>
+  <div class="sub">Upload an image. A U²-Net segmentation model removes the background. Images are processed in memory and never stored.</div>
+
+  <div id="drop">Drop an image here or click to browse<br><small style="color:var(--dim)">PNG / JPG / WEBP, up to 10MB</small></div>
+  <input type="file" id="file" accept="image/*" hidden>
+
+  <div class="row">
+    <label for="q">model</label>
+    <select id="q">
+      <option value="fast">fast (u2netp)</option>
+      <option value="balanced" selected>balanced (u2net)</option>
+      <option value="quality">quality (isnet)</option>
+    </select>
+    <label>bg</label>
+    <button class="sw on checker" data-c="transparent" title="Transparent"></button>
+    <button class="sw" data-c="#ffffff" style="background:#fff" title="White"></button>
+    <button class="sw" data-c="#000000" style="background:#000" title="Black"></button>
+    <button class="sw" data-c="#00ff9c" style="background:#00ff9c" title="Green"></button>
+    <button class="primary" id="run" disabled>Remove background</button>
+    <button id="dl" disabled>Download PNG</button>
+  </div>
+  <div id="err"></div>
+
+  <div class="panels" id="panels" hidden>
+    <div class="panel"><h3>original</h3><div class="stage"><img id="orig" alt="Original"></div></div>
+    <div class="panel"><h3>result</h3><div class="stage checker" id="resStage"><img id="res" alt="Result"></div></div>
+  </div>
+  <div id="stats"></div>
+
+  <footer>
+    Built with FastAPI, rembg (U²-Net), ONNX Runtime, Pillow.<br>
+    Public demo: images are resized to 2000px max and requests are rate limited.
+  </footer>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let file = null, bg = "transparent";
+const drop = $("drop"), inp = $("file");
+
+drop.onclick = () => inp.click();
+["dragover", "dragenter"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", ev => pick(ev.dataTransfer.files[0]));
+inp.onchange = () => pick(inp.files[0]);
+
+function pick(f) {
+  if (!f || !f.type.startsWith("image/")) return;
+  file = f;
+  $("orig").src = URL.createObjectURL(f);
+  $("res").removeAttribute("src");
+  $("panels").hidden = false;
+  $("run").disabled = false;
+  $("dl").disabled = true;
+  $("stats").textContent = "";
+  $("err").textContent = "";
+}
+
+$("run").onclick = async () => {
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("quality", $("q").value);
+  $("run").disabled = true;
+  $("stats").textContent = "processing...";
+  $("err").textContent = "";
+  try {
+    const r = await fetch("/api/remove-bg", { method: "POST", body: fd });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      throw new Error(j.detail || "Request failed");
+    }
+    $("res").src = URL.createObjectURL(await r.blob());
+    $("dl").disabled = false;
+    $("stats").textContent = `done in ${r.headers.get("X-Process-Ms")} ms on ${r.headers.get("X-Device")}`;
+  } catch (e) {
+    $("stats").textContent = "";
+    $("err").textContent = "error: " + e.message;
+  }
+  $("run").disabled = false;
+};
+
+document.querySelectorAll(".sw").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".sw").forEach(x => x.classList.remove("on"));
+  b.classList.add("on");
+  bg = b.dataset.c;
+  const s = $("resStage");
+  if (bg === "transparent") { s.className = "stage checker"; s.style.background = ""; }
+  else { s.className = "stage"; s.style.background = bg; }
+});
+
+$("dl").onclick = () => {
+  const img = $("res"), c = document.createElement("canvas");
+  c.width = img.naturalWidth; c.height = img.naturalHeight;
+  const x = c.getContext("2d");
+  if (bg !== "transparent") { x.fillStyle = bg; x.fillRect(0, 0, c.width, c.height); }
+  x.drawImage(img, 0, 0);
+  const a = document.createElement("a");
+  a.href = c.toDataURL("image/png");
+  a.download = "no-bg.png";
+  a.click();
+};
+</script>
+</body>
+</html>
