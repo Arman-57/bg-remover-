@@ -18,10 +18,10 @@ from rembg import new_session, remove  # noqa: E402
 
 BASE = Path(__file__).parent
 MAX_BYTES = 10 * 1024 * 1024
-MAX_SIDE = 2000
+MAX_SIDE = 1000
 RATE_LIMIT, RATE_WINDOW = 10, 60  # requests per IP per seconds
 
-MODELS = {"fast": "u2netp", "balanced": "u2net", "quality": "isnet-general-use"}
+MODELS = {"fast": "u2netp"}
 PROVIDERS = [
     p for p in ("CUDAExecutionProvider", "CPUExecutionProvider")
     if p in ort.get_available_providers()
@@ -56,10 +56,12 @@ def rate_limited(ip: str) -> bool:
     q.append(now)
     return False
 
-
 def process(data: bytes, model: str):
-    img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGBA")
+    img = Image.open(io.BytesIO(data))
+    img.draft("RGB", (MAX_SIDE, MAX_SIDE))  # JPEGs decode at reduced size
+    img = ImageOps.exif_transpose(img)
     img.thumbnail((MAX_SIDE, MAX_SIDE))
+    img = img.convert("RGBA")
     t = time.perf_counter()
     out = remove(img, session=get_session(model))
     ms = int((time.perf_counter() - t) * 1000)
@@ -67,12 +69,11 @@ def process(data: bytes, model: str):
     out.save(buf, format="PNG")
     return buf.getvalue(), ms
 
-
 @app.post("/api/remove-bg")
 async def remove_bg(
     request: Request,
     file: UploadFile = File(...),
-    quality: str = Form("balanced"),
+    quality: str = Form("fast"),
 ):
     if rate_limited(client_ip(request)):
         raise HTTPException(429, "Too many requests, try again in a minute")

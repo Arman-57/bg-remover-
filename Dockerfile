@@ -1,5 +1,5 @@
 FROM python:3.11-slim
-RUN useradd -m -u 1000 user
+RUN python -c "from rembg import new_session; new_session('u2netp')"
 USER user
 ENV HOME=/home/user PATH=/home/user/.local/bin:$PATH
 WORKDIR /home/user/app
